@@ -1,10 +1,10 @@
 (ns city-traffic.core)
 
 (def running true)
-(def dim 20)
+(def dim 30)
 (def dim-- (dec dim))
 (def car-length 1)
-(def min-road-length (* 2 car-length))
+(def min-road-length (* 3 car-length))
 (def max-road-length (* 5 car-length))
 (def min-road-tilt (* 3 car-length))
 (def max-road-tilt-deviation (* 9 car-length))
@@ -73,13 +73,20 @@
               (send-off *agent* behave [(:x ahead-info) (:y ahead-info)]))
             car))))))
 
-(defn build-road-on-place [x y]
-  (let [p (place [x y])]
-    (if (:road @p)
-      (if (zero? (rand-int 2))
-        (alter p assoc :crossing {:waiting-queue []})
-        (alter p assoc :tr-light 1))
-      (alter p assoc :road 1))))
+(defn road-builder [places-with-dirs rand-bool]
+  (doseq [[p dir] places-with-dirs]
+      (if (:road @p)
+        (if rand-bool
+          (alter p assoc :crossing {:waiting-queue []})
+          (alter p assoc :tr-light 1))
+        (alter p assoc :road {:line-dir dir}))))
+
+(defn build-road-on-place [x y vertical?]
+  (let [rand-bool (zero? (rand-int 2))
+        coordinates-with-dirs (if vertical? 
+                                [[x y 0] [(inc x) y 4] [x (inc y) 0] [(inc x) (inc y) 4]]
+                                [[x y 6] [x (inc y) 2] [(inc x) y 6] [(inc x) (inc y) 2]])]
+    (road-builder (map #(vector (place (take 2 %)) (nth % 2)) coordinates-with-dirs) rand-bool)))
 
 (defn setup-city []
   (dosync
@@ -88,26 +95,25 @@
         (if (zero? (rand-int 2))
           (let [fixed-dim (+ min-road-length last-fixed-dim (rand-int (inc max-road-length)))
                 tilt-deviation (rand-int (min max-road-tilt-deviation (- dim fixed-dim min-road-tilt)))]
-            (doseq [free-dim (range dim)]
+            (doseq [free-dim (range 0 dim 2)]
               (let [tilted-fixed-dim (+ fixed-dim (quot (* (+ tilt-deviation min-road-tilt) free-dim) dim))]
                 (if x-fixed?
-                  (build-road-on-place tilted-fixed-dim free-dim)
-                  (build-road-on-place free-dim tilted-fixed-dim))))
+                  (build-road-on-place tilted-fixed-dim free-dim x-fixed?)
+                  (build-road-on-place free-dim tilted-fixed-dim x-fixed?))))
             (when (< (+ min-road-length fixed-dim tilt-deviation min-road-tilt max-road-length) dim--)
               ;roads cannot be borders of space, beacause of car startin
               (recur (+ fixed-dim tilt-deviation min-road-tilt))))
           (let [fixed-dim (+ min-road-length last-fixed-dim (rand-int (inc max-road-length)))]
-            (doseq [free-dim (range dim)]
+            (doseq [free-dim (range 0 dim 2)]
               (if x-fixed?
-                (build-road-on-place fixed-dim free-dim)
-                (build-road-on-place free-dim fixed-dim)))
+                (build-road-on-place fixed-dim free-dim x-fixed?)
+                (build-road-on-place free-dim fixed-dim x-fixed?)))
             (when (< (+ min-road-length fixed-dim max-road-length) dim--)
               ;roads cannot be borders of space, beacause of car startin
               (recur fixed-dim))))))))
 
 (defn setup-car [[x y :as coordinates] direction]
   (let [car (agent {:img 0
-                  :road 0
                   :dir direction
                   :forced-speed 0 
                   :speed-pref 0
@@ -119,7 +125,7 @@
 (defn setup-cars []
   (remove nil? (for [pos (range dim)
                      [dir & coordinates] [[0 pos 0] [2 0 pos] [6 dim-- pos] [4 pos dim--]]]
-                 (when (:road @(place coordinates)) (setup-car coordinates dir)))))
+                 (when (= (:line-dir (:road @(place coordinates))) dir) (setup-car coordinates dir)))))
 
 (use 'city-traffic.ui)
 
