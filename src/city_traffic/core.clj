@@ -10,7 +10,7 @@
 (def max-road-tilt-deviation (* 9 car-length))
 
 (def animation-sleep-ms 100)
-(def car-sleep-ms 40)
+(def car-sleep-ms 400)
 
 (def world
   (mapv (fn [y]
@@ -51,9 +51,20 @@
         (let [ahead (place ahead-coordinate-pair-with-crossing)
               ahead-info @ahead]
           (if (:crossing ahead-info)
-            nil
+            (do
+              (dosync
+                (alter ahead assoc :waiting-queue (conj (:waiting-queue ahead-info) coordinates)))
+              (loop [ahead-info @ahead]
+                (let [waiting-queue (:waiting-queue ahead-info)]
+                  (if (= (first waiting-queue) coordinates)
+                    (dosync
+                      (move p ahead)
+                      (behave car [(:x ahead-info) (:y ahead-info)])
+                      (alter ahead assoc :waiting-queue (vec (rest waiting-queue)))
+                      car)
+                    (recur @ahead)))))
             (if (:tr-light ahead-info)
-              nil)))
+              car)))
         (if ahead-coordinate-pair-with-road
           (let [ahead (place ahead-coordinate-pair-with-road)
                 ahead-info @ahead]
@@ -66,7 +77,7 @@
   (let [p (place [x y])]
     (if (:road @p)
       (if (zero? (rand-int 2))
-        (alter p assoc :crossing 1)
+        (alter p assoc :crossing {:waiting-queue []})
         (alter p assoc :tr-light 1))
       (alter p assoc :road 1))))
 
@@ -75,8 +86,8 @@
     (doseq [x-fixed? [true false]]
       (loop [last-fixed-dim 1] ;roads cannot be borders of space, beacause of car starting
         (if (zero? (rand-int 2))
-          (let [tilt-deviation (rand-int (min max-road-tilt-deviation (- dim last-fixed-dim 1)))
-                fixed-dim (+ min-road-length last-fixed-dim (rand-int (+ 1 max-road-length)))]
+          (let [fixed-dim (+ min-road-length last-fixed-dim (rand-int (inc max-road-length)))
+                tilt-deviation (rand-int (min max-road-tilt-deviation (- dim fixed-dim min-road-tilt)))]
             (doseq [free-dim (range dim)]
               (let [tilted-fixed-dim (+ fixed-dim (quot (* (+ tilt-deviation min-road-tilt) free-dim) dim))]
                 (if x-fixed?
