@@ -4,7 +4,7 @@
 (def dim 50)
 (def dim-- (dec dim))
 (def car-length 1)
-(def min-road-length (* 3 car-length))
+(def min-road-length (* 4 car-length))
 (def max-road-length (* 5 car-length))
 (def min-road-tilt (* 3 car-length))
 (def max-road-tilt-deviation (* 9 car-length))
@@ -45,7 +45,7 @@
                                                          (let [ahead-info @(place ahead-coordinates)]
                                                            (or (when-let [crossing-info (:crossing ahead-info)]
                                                                  (some #{(:dir car)} (:line-dirs crossing-info)))
-                                                               (when-let [tr-info (:tr-light ahead-info)]
+                                                               (when-let [tr-info (:tr-light-crossing ahead-info)]
                                                                  (some #{(:dir car)} (:line-dirs tr-info))))))
                                                        ahead-coordinate-pairs-in-board))
           ahead-coordinate-pair-with-road (first (filter 
@@ -53,7 +53,7 @@
                                                      (let [ahead-info @(place ahead-coordinates)]
                                                        (when-let [road-info (:road ahead-info)]
                                                          (= (:line-dir road-info) (:dir car)))))
-                                                       ahead-coordinate-pairs-in-board))]
+                                                   ahead-coordinate-pairs-in-board))]
       (Thread/sleep car-sleep-ms)
       (if ahead-coordinate-pair-with-crossing
         (let [ahead (place ahead-coordinate-pair-with-crossing)
@@ -61,33 +61,53 @@
           (if (:crossing ahead-info)
             (do
               (dosync
-                (alter ahead assoc :waiting-queue (conj (:waiting-queue ahead-info) coordinates)))
+                (alter ahead assoc-in [:crossing :waiting-queue]
+                       (conj (:waiting-queue (:crossing ahead-info)) coordinates)))
               (loop [ahead-info @ahead]
-                (let [waiting-queue (:waiting-queue ahead-info)]
+                (let [waiting-queue (:waiting-queue (:crossing ahead-info))]
                   (if (= (first waiting-queue) coordinates)
                     (dosync
                       (move p ahead)
                       (behave car [(:x ahead-info) (:y ahead-info)])
-                      (alter ahead assoc :waiting-queue (vec (rest waiting-queue)))
+                      (alter ahead assoc-in [:crossing :waiting-queue] (vec (rest waiting-queue)))
                       car)
                     (recur @ahead)))))
-            (if (:tr-light ahead-info)
-              car)))
-        (if ahead-coordinate-pair-with-road
-          (let [ahead (place ahead-coordinate-pair-with-road)
-                ahead-info @ahead]
-            (dosync
-              (move p ahead)
-              (send-off *agent* behave [(:x ahead-info) (:y ahead-info)]))
-            car))))))
+            (if (:tr-light-crossing ahead-info)
+              (loop [ahead-info @ahead]
+                @(:promise (:tr-light-crossing ahead-info))
+                (dosync
+                  (move p ahead)
+                  (behave car [(:x ahead-info) (:y ahead-info)])
+                  car))))))
+      (if ahead-coordinate-pair-with-road
+        (let [ahead (place ahead-coordinate-pair-with-road)
+              ahead-info @ahead]
+          (dosync
+            (move p ahead)
+            (send-off *agent* behave [(:x ahead-info) (:y ahead-info)]))
+          car)))))
+
+(defn tr-light-behave [tr-light]
+  (doseq [coordinates tr-light]
+    (deliver (:promise @(place coordinates) true))))
 
 (defn road-builder [places-with-dirs rand-bool]
   (doseq [[p dir dir2] places-with-dirs]
-      (if (:road @p)
-        (if rand-bool
-          (alter p assoc :crossing {:line-dirs [dir dir2] :waiting-queue []})
-          (alter p assoc :tr-light {:line-dirs [dir dir2]}))
-        (alter p assoc :road {:line-dir dir}))))
+    (if-let [place-info @p]
+      (if rand-bool
+        (alter p assoc :crossing {:line-dirs [dir dir2] :waiting-queue []})
+        (let [spread [-1 0 1]
+              coordinates [(:x place-info) (:y place-info)]
+              coords-around-in (for [x (map #(+ (:x place-info) %) spread)
+                                     y (map #(+ (:y place-info) %) spread)]
+                                 [x y])]
+          (alter p assoc :tr-light-crossing {:line-dirs [dir dir2] :promise (promise)})
+          (if-let [tr-light-coords (first (filter #(:tr-light @(place %)) coords-around-in))]
+            (send-off (:tr-light @(place tr-light-coords)) conj coordinates)
+            (do
+              (alter p assoc :tr-light (agent [coordinates]))
+              (send-off (:tr-light @p) tr-light-behave)))))
+      (alter p assoc :road {:line-dir dir}))))
 
 (defn build-road-on-place [x y vertical? rand-bool]
   (let [coordinates-with-dirs (if vertical? 
