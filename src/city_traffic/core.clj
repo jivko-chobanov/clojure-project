@@ -15,6 +15,7 @@
 (def min-tr-light-sleep 800)
 (def max-tr-light-sleep 3000)
 (def tr-light-sleep-deviation (- max-tr-light-sleep min-tr-light-sleep))
+(def cars-setup-interval 4000)
 
 (def world
   (mapv (fn [y]
@@ -34,7 +35,9 @@
 
 (defn move [old-place new-place]
   (let [car (:car @old-place)]
+    (deliver (:promise @car) true)
     (alter old-place dissoc :car)
+    (send-off car assoc :promise (promise))
     (alter new-place assoc :car car)))
 
 (declare behave-on-crossing)
@@ -66,6 +69,8 @@
         (if ahead-coordinate-pair-with-road
           (let [ahead (place ahead-coordinate-pair-with-road)
                 ahead-info @ahead]
+            (when (get ahead-info :car)
+              @(:promise @(:car ahead-info)))
             (dosync
               (move p ahead)
               (send-off *agent* behave [(:x ahead-info) (:y ahead-info)]))
@@ -75,6 +80,8 @@
   (let [ahead (place ahead-coordinate-pair-with-crossing)
         ahead-info @ahead
         p (place coordinates)]
+    (when (get ahead-info :car)
+      @(:promise @(:car ahead-info)))
     (if (:crossing ahead-info)
       (do
         (dosync
@@ -184,11 +191,7 @@
     (send-off tr-light tr-light-behave)))
 
 (defn setup-car [[x y :as coordinates] direction]
-  (let [car (agent {:img 0
-                    :dir direction
-                    :forced-speed 0 
-                    :speed-pref 0
-                    :left-or-right :left})]
+  (let [car (agent {:dir direction :promise (promise)})]
     (dosync
       (alter (place coordinates) assoc :car car))
     {:x x :y y :car car}))
@@ -200,9 +203,14 @@
 
 (use 'city-traffic.ui)
 
+(defn setup-and-run-cars []
+  (let [cars (setup-cars)]
+    (dorun (map #(send-off (:car %) behave [(:x %) (:y %)]) cars)))
+  (Thread/sleep cars-setup-interval)
+  (setup-and-run-cars))
+
 (defn -main []
   (def tr-light-infos (setup-city))
-  (def cars (setup-cars))
   (send-off animator animation)
   (dorun (map setup-tr-light tr-light-infos))
-  (dorun (map #(send-off (:car %) behave [(:x %) (:y %)]) cars)))
+  (setup-and-run-cars))
