@@ -8,6 +8,7 @@
 
 ;pixels per world cell
 (def scale 10)
+(def half-scale (/ scale 2))
 
 (defn fill-cell [^Graphics g x y c]
   (doto g
@@ -21,17 +22,26 @@
 
 (defn render-crossing [crossing ^Graphics g x y]
   (doto g
-    (.setColor (new Color 255 0 0))
-    (.fillRect (* x scale) (* y scale) scale scale)))
-
-(defn render-tr-light [tr-light ^Graphics g x y]
-  (doto g
     (.setColor (new Color 255 0 255))
     (.fillRect (* x scale) (* y scale) scale scale)))
 
+(defn render-tr-light [tr-light ^Graphics g x y]
+  (let [vertical-dir-promise (first (filter #(not (nil? %)) (map #(get-in tr-light [:promises %]) [0 4])))]
+    (if (realized? vertical-dir-promise)
+      (doto g
+        (.setColor (new Color 0 255 0))
+        (.fillRect (* x scale) (* y scale) half-scale scale)
+        (.setColor (new Color 255 0 0))
+        (.fillRect (+ half-scale (* x scale)) (* y scale) half-scale scale))
+      (doto g
+        (.setColor (new Color 255 0 0))
+        (.fillRect (* x scale) (* y scale) scale half-scale)
+        (.setColor (new Color 0 255 0))
+        (.fillRect (* x scale) (+ half-scale (* y scale)) scale half-scale)))))
+
 (defn render-road [road ^Graphics g x y]
   (doto g
-    (.setColor (new Color 0 255 0))
+    (.setColor (new Color 200 200 255))
     (.fillRect (* x scale) (* y scale) scale scale)))
 
 (defn render-car [car ^Graphics g x y]
@@ -42,7 +52,7 @@
 (defn render-place [g p x y]
   (when (:building p) (render-building (:building p) g x y))
   (when (:road p)     (render-road (:road p) g x y))
-  (when (:tr-light-crossing p) (render-tr-light (:tr-light-crossing p) g x y))
+  (when (:controlled-by-tr-light p) (render-tr-light (:controlled-by-tr-light p) g x y))
   (when (:crossing p) (render-crossing (:crossing p) g x y))
   (when (:car p)      (render-car (:car p) g x y)))
 

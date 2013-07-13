@@ -1,4 +1,5 @@
-(ns city-traffic.core)
+(ns city-traffic.core
+  (:use (clojure set)))
 
 (def running true)
 (def dim 50)
@@ -50,7 +51,7 @@
                                                          (let [ahead-info @(place ahead-coordinates)]
                                                            (or (when-let [crossing-info (:crossing ahead-info)]
                                                                  (some #{(:dir car)} (:line-dirs crossing-info)))
-                                                               (when-let [tr-info (:tr-light-crossing ahead-info)]
+                                                               (when-let [tr-info (:controlled-by-tr-light ahead-info)]
                                                                  (some #{(:dir car)} (:line-dirs tr-info))))))
                                                        ahead-coordinate-pairs-in-board))
           ahead-coordinate-pair-with-road (first (filter 
@@ -88,10 +89,10 @@
                 (alter ahead assoc-in [:crossing :waiting-queue] (vec (rest waiting-queue)))
                 car)
               (recur @ahead)))))
-      (if (:tr-light-crossing ahead-info)
+      (if (:controlled-by-tr-light ahead-info)
         (loop [ahead-info @ahead]
           (if-let [trl (:tr-light ahead-info)] (if-let [err (agent-error trl)] (prn ahead-info err)))
-          @(get-in ahead-info [:tr-light-crossing :promise])
+          @(get-in ahead-info [:controlled-by-tr-light :promises (:dir car)])
           (dosync
             (move p ahead)
             (behave car [(:x ahead-info) (:y ahead-info)])
@@ -100,45 +101,51 @@
 (defn tr-light-behave [tr-light]
   (dosync
     (doseq [coordinates (:coordinate-pairs tr-light)
-            tr-light-crossing-info (:tr-light-crossing @(place coordinates))]
-      (if ((set (:green-dirs tr-light)) (:line-dirs tr-light-crossing-info))
-        (deliver (:promise tr-light-crossing-info) true)
-        (if (realized? (:promise tr-light-crossing-info))
-          (alter (place coordinates) assoc-in [:tr-light-crossing :promise] (promise))))))
+            green-dir (:green-dirs tr-light)
+            [promise-dir the-promise] (get-in @(place coordinates) [:controlled-by-tr-light :promises])]
+      (if (= green-dir promise-dir)
+        (deliver the-promise true)
+        (when (realized? the-promise)
+          (alter (place coordinates) assoc-in [:controlled-by-tr-light :promises promise-dir] (promise))))))
   (Thread/sleep (:sleep tr-light))
   (send-off *agent* tr-light-behave)
   (assoc tr-light :green-dirs (map #(rem (+ % 2) 8) (:green-dirs tr-light))))
 
-(defn road-builder [places-with-dirs rand-bool]
-  (doseq [[p dir dir2] places-with-dirs]
-    (let [place-info @p]
-      (dosync
-        (if (:road place-info)
-          (if rand-bool
-            (alter p assoc :crossing {:line-dirs [dir dir2] :waiting-queue []})
-            (let [spread [-1 0 1]
-                  coordinates [(:x place-info) (:y place-info)]
-                  coords-around-in (for [x (map #(+ (:x place-info) %) spread)
-                                         y (map #(+ (:y place-info) %) spread)
-                                         :when (and (>= x 0) (< x dim) (>= y 0) (< y dim))]
-                                     [x y])]
-              (alter p assoc :tr-light-crossing {:line-dirs [dir dir2] :promise (promise)})
-              (if-let [tr-light-coords (first (filter #(:tr-light @(place %)) coords-around-in))]
-                (let [tr-light (:tr-light @(place tr-light-coords))
-                      new-coordinate-pairs (conj (:coordinate-pairs @tr-light) coordinates)]
-                  (send-off tr-light assoc :coordinate-pairs new-coordinate-pairs))
-                (let [tr-light (agent {:green-dirs [dir2 (rem (+ dir2 4) 8)]
-                                                   :coordinate-pairs [coordinates]
-                                                   :sleep (+ min-tr-light-sleep
-                                                             (rand-int tr-light-sleep-deviation))})]
-                  (alter p assoc :tr-light tr-light)))))
-          (alter p assoc :road {:line-dir dir}))))))
+(defn road-builder [[p dir dir2] rand-bool]
+  (let [place-info @p]
+    (dosync
+      (if (:road place-info)
+        (if rand-bool
+          (alter p assoc :crossing {:line-dirs [dir dir2] :waiting-queue []})
+          (let [spread [-1 0 1]
+                coordinates [(:x place-info) (:y place-info)]
+                coords-around-in (for [x (map #(+ (:x place-info) %) spread)
+                                       y (map #(+ (:y place-info) %) spread)
+                                       :when (and (>= x 0) (< x dim) (>= y 0) (< y dim))]
+                                   [x y])]
+            (alter p assoc :controlled-by-tr-light {:line-dirs [dir dir2] :promises {dir (promise) dir2 (promise)}})
+            (if-let [[tr-light-coords tr-light-info] (first
+                                                       (filter
+                                                         (fn [[_ info]] (not (nil? info)))
+                                                         (map #(vector % (get @(place %) :tr-light-info))
+                                                              coords-around-in)))]
+              (alter (place tr-light-coords)
+                     assoc-in
+                     [:tr-light-info :coordinate-pairs]
+                     (conj (:coordinate-pairs tr-light-info) coordinates))
+              (let [tr-light-info {:green-dirs [dir2 (rem (+ dir2 4) 8)]
+                                   :coordinate-pairs [coordinates]
+                                   :sleep (+ min-tr-light-sleep
+                                             (rand-int tr-light-sleep-deviation))}]
+                (alter p assoc :tr-light-info tr-light-info)))))
+        (alter p assoc :road {:line-dir dir})))))
 
 (defn build-road-on-place [x y vertical? rand-bool]
-  (let [coordinates-with-dirs (if vertical? 
-                                [[x y 0 6] [(inc x) y 4 6] [x (inc y) 0 2] [(inc x) (inc y) 4 2]]
-                                [[x y 6 4] [x (inc y) 2 4] [(inc x) y 6 0] [(inc x) (inc y) 2 0]])]
-    (road-builder (map #(vector (place (take 2 %)) (nth % 2) (nth % 3)) coordinates-with-dirs) rand-bool)))
+  (doseq [[x y dir dir2] (if vertical? 
+                           [[x y 0 6] [(inc x) y 4 6] [x (inc y) 0 2] [(inc x) (inc y) 4 2]]
+                           [[x y 6 4] [x (inc y) 2 4] [(inc x) y 6 0] [(inc x) (inc y) 2 0]])
+          :when (and (>= x 0) (< x dim) (>= y 0) (< y dim))]
+    (road-builder [(place [x y]) dir dir2] rand-bool)))
 
 (defn setup-city []
   (doseq [x-fixed? [true false]]
@@ -146,11 +153,11 @@
       (if (zero? (rand-int 2))
         (let [fixed-dim (+ min-road-length last-fixed-dim (rand-int (inc max-road-length-deviation)))
               tilt-deviation (rand-int (min max-road-tilt-deviation (- dim fixed-dim min-road-tilt)))]
-          (doseq [free-dim (range 0 dim 2)]
-            (let [tilted-fixed-dim (+ fixed-dim (quot (* (+ tilt-deviation min-road-tilt) free-dim) dim))]
-              (if x-fixed?
-                (build-road-on-place tilted-fixed-dim free-dim x-fixed? rand-bool)
-                (build-road-on-place free-dim tilted-fixed-dim x-fixed? rand-bool))))
+          (doseq [free-dim (range 0 dim 2)
+                  :let [tilted-fixed-dim (+ fixed-dim (quot (* (+ tilt-deviation min-road-tilt) free-dim) dim))]]
+            (if x-fixed?
+              (build-road-on-place tilted-fixed-dim free-dim x-fixed? rand-bool)
+              (build-road-on-place free-dim tilted-fixed-dim x-fixed? rand-bool)))
           (when (< (+ min-road-length fixed-dim tilt-deviation min-road-tilt max-road-length-deviation) dim--)
             ;roads cannot be borders of space, beacause of car startin
             (recur (+ fixed-dim tilt-deviation min-road-tilt)
@@ -165,7 +172,16 @@
             ;roads cannot be borders of space, beacause of car startin
             (recur fixed-dim
                    (if old rand-bool (zero? (rand-int 2)))
-                   (not old))))))))
+                   (not old)))))))
+  (for [x (range dim)
+        y (range dim)
+        :let [tr-light-info (get @(place [x y]) :tr-light-info)]
+        :when tr-light-info]
+    tr-light-info))
+
+(defn setup-tr-light [agent-info]
+  (let [tr-light (agent agent-info)]
+    (send-off tr-light tr-light-behave)))
 
 (defn setup-car [[x y :as coordinates] direction]
   (let [car (agent {:img 0
@@ -185,7 +201,8 @@
 (use 'city-traffic.ui)
 
 (defn -main []
-  (setup-city)
+  (def tr-light-infos (setup-city))
   (def cars (setup-cars))
   (send-off animator animation)
+  (dorun (map setup-tr-light tr-light-infos))
   (dorun (map #(send-off (:car %) behave [(:x %) (:y %)]) cars)))
