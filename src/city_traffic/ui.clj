@@ -42,7 +42,7 @@
 (defn render-place [g p x y]
   (when (:building p) (render-building (:building p) g x y))
   (when (:road p)     (render-road (:road p) g x y))
-  (when (:tr-light p) (render-tr-light (:tr-light p) g x y))
+  (when (:tr-light-crossing p) (render-tr-light (:tr-light-crossing p) g x y))
   (when (:crossing p) (render-crossing (:crossing p) g x y))
   (when (:car p)      (render-car (:car p) g x y)))
 
